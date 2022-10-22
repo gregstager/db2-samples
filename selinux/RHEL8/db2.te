@@ -1,0 +1,315 @@
+policy_module(db2, 2.0.0)
+
+require {
+    role unconfined_r;
+    type unconfined_t;
+    role dbadm_r;
+    role staff_r;
+    type staff_t;
+    type dbadm_t;
+    type remote_login_t;
+    type rlogind_devpts_t;
+    type xdm_t;
+    type passwd_file_t;
+    type proc_security_t;
+    type home_root_t;
+    type pstore_t;
+}
+
+# Macro to allow a domain to manage all aspect of the given
+# file/directory.  This includes symbolic links, fifo etc.
+# manage_dir_file_pattern( <domain>, <file_type>)
+define(`manage_dir_file_pattern',`
+   manage_dirs_pattern($1,$2,$2)
+   manage_files_pattern($1,$2,$2)
+   manage_lnk_files_pattern($1,$2,$2)
+   manage_fifo_files_pattern($1,$2,$2)
+   manage_sock_files_pattern($1,$2,$2)
+')
+
+
+define(`db2_admin_manage_db2_files',`
+   manage_dir_file_pattern( $1, db2_adminusers_file_types )
+   exec_files_pattern( $1,  db2d_exec_t, db2d_exec_t )
+')
+
+define(`db2_user_manage_db2_files',`
+
+   # Users should not be able to read data files, however
+   # some db2_cfg_t files are buried inside data directories
+   list_dirs_pattern( $1, db2_data_t, db2_data_t )
+   manage_dir_file_pattern( $1, db2_file_t )
+
+   read_files_pattern( $1, db2_shlib_t, db2_shlib_t )
+   list_dirs_pattern( $1, db2_shlib_t, db2_shlib_t )
+   read_lnk_files_pattern( $1, db2_shlib_t, db2_shlib_t )
+   allow $1 db2_shlib_t:file { execute };
+
+   read_files_pattern( $1, db2_relshlib_t, db2_relshlib_t )
+   read_lnk_files_pattern( $1, db2_relshlib_t, db2_relshlib_t )
+   allow $1 db2_relshlib_t:file { execute execmod };
+
+   read_files_pattern( $1, db2_exec_t, db2_exec_t )
+   read_lnk_files_pattern( $1, db2_exec_t, db2_exec_t )
+   list_dirs_pattern( $1, db2_exec_t, db2_exec_t )
+   exec_files_pattern( $1,  db2_exec_t, db2_exec_t )
+
+# TODO:  Don't need all perms, at least need associate
+   allow $1 db2d_t:shm all_shm_perms;
+')
+
+
+
+##############################################################
+# Private type declarations
+##############################################################
+
+
+##############################################################
+# Db2 domains - under which processes run.
+##############################################################
+
+
+# The main Db2 engine domain is db2d_t.
+type db2d_t;
+type db2d_exec_t;
+init_daemon_domain(db2d_t, db2d_exec_t)
+application_domain(db2d_t, db2d_exec_t)
+
+
+
+# Start with domains as permissive
+# TODO: Remove these
+permissive db2d_t;
+
+
+##############################################################
+# Db2 file and executable types
+##############################################################
+
+
+# Catch-all for Db2 files and directories
+type db2_file_t;
+files_type(db2_file_t)
+
+# Db2 data files (containers, catalogs, etc) and the directories they live in
+type db2_data_t;
+files_type(db2_data_t)
+
+# Db2 shared libraries
+type db2_shlib_t;
+corecmd_executable_file(db2_shlib_t)
+
+# Db2 relocatable shared libraries
+type db2_relshlib_t;
+corecmd_executable_file(db2_relshlib_t)
+
+# Executables
+type db2_exec_t;
+corecmd_executable_file(db2_exec_t)
+
+attribute db2_adminusers_file_types;
+typeattribute db2_file_t         db2_adminusers_file_types;
+typeattribute db2_data_t         db2_adminusers_file_types;
+typeattribute db2_shlib_t        db2_adminusers_file_types;
+typeattribute db2_relshlib_t     db2_adminusers_file_types;
+typeattribute db2d_exec_t        db2_adminusers_file_types;
+typeattribute db2_exec_t         db2_adminusers_file_types;
+
+# For both TCPIP and TLS ports
+type db2_port_t;
+corenet_port( db2_port_t )
+
+##############################################################
+# Db2 user and role types
+# These are not singular types, but as attributes they are
+# groups of types representing Db2 admin users
+##############################################################
+
+# These are a group of types that are associated with users.
+# The types that are part of these attribute types are defined
+# in the db2.if file through the *_role interface.
+attribute db2_adminusers_types;
+
+# Similar to above, a group of roles for users of Db2.
+attribute_role db2_adminusers_roles;
+
+##############################################################
+#
+# Define which roles and types are allowed to use Db2
+# TODO: Do we need booleans for this?  Does everyone want it to make to these users?
+#
+##############################################################
+
+db2_adminusers_role( unconfined_r, unconfined_t )
+db2_adminusers_role( dbadm_r, dbadm_t )
+
+##############################################################
+# Automatic domain transitions
+##############################################################
+
+# Any admin user that runs db2start will transition into
+# the db2d_t domain.
+# This is the primary confinement of the Db2 Server.
+domain_auto_transition_pattern(db2_adminusers_types,  db2d_exec_t,   db2d_t)
+
+##############################################################
+#
+# Unique permissions for db2d_t
+#
+##############################################################
+
+db2_user_manage_db2_files( db2d_t )
+db2_admin_manage_db2_files( db2d_t )
+
+
+allow db2d_t self:process { fork sigchld sigkill sigstop signull signal ptrace setsched };
+allow db2d_t self:process { getpgid setpgid getcap setcap setrlimit execmem execstack };
+allow db2d_t self:capability { chown dac_override setgid setuid ipc_lock ipc_owner sys_rawio };
+allow db2d_t self:capability { sys_ptrace sys_admin sys_resource sys_nice kill };
+
+allow db2d_t self:fd use;
+allow db2d_t self:fifo_file manage_fifo_file_perms;
+allow db2d_t self:unix_dgram_socket { create_socket_perms sendto };
+allow db2d_t self:unix_stream_socket all_unix_stream_socket_perms;
+allow db2d_t self:shm  all_shm_perms;
+allow db2d_t self:sem create_sem_perms;
+allow db2d_t self:sem  all_sem_perms;
+allow db2d_t self:msgq all_msgq_perms;
+allow db2d_t self:msg all_msg_perms;
+allow db2d_t self:udp_socket create_socket_perms;
+allow db2d_t self:tcp_socket create_stream_socket_perms;
+allow db2d_t self:netlink_route_socket r_netlink_socket_perms;
+
+allow db2d_t db2_port_t:tcp_socket name_connect;
+
+
+files_read_etc_files(db2d_t)
+files_manage_generic_locks(db2d_t)
+files_manage_generic_tmp_files(db2d_t)
+files_manage_generic_tmp_dirs(db2d_t)
+fs_manage_tmpfs_files( db2d_t )
+fs_manage_tmpfs_dirs( db2d_t )
+fs_getattr_tmpfs( db2d_t )
+
+domain_use_interactive_fds( db2d_t )
+miscfiles_read_localization( db2d_t )
+
+fs_manage_configfs_files( db2d_t )
+fs_manage_configfs_dirs( db2d_t )
+fs_getattr_xattr_fs( db2d_t )
+
+corecmd_exec_all_executables( db2d_t )
+libs_use_shared_libs(db2d_t)
+libs_use_ld_so(db2d_t)
+
+read_files_pattern( db2d_t, home_root_t, home_root_t )
+list_dirs_pattern( db2d_t, home_root_t, home_root_t )
+userdom_manage_user_home_dirs( db2d_t )
+userdom_manage_user_home_content_files( db2d_t )
+
+fs_exec_nfs_files( db2d_t )
+
+dev_read_sysfs( db2d_t )
+dev_search_sysfs( db2d_t )
+
+
+getattr_files_pattern( db2d_t, pstore_t, pstore_t)
+
+corenet_tcp_bind_reserved_port( db2d_t )
+corenet_udp_bind_reserved_port( db2d_t )
+corenet_tcp_connect_smtp_port( db2d_t )
+corenet_tcp_bind_all_nodes( db2d_t )
+corenet_udp_bind_all_nodes( db2d_t )
+
+sysnet_dns_name_resolve(db2d_t)
+
+auth_read_shadow( db2d_t )
+auth_use_pam( db2d_t )
+
+kernel_read_system_state( db2d_t )
+kernel_get_sysvipc_info(db2d_t)
+kernel_read_network_state(db2d_t)
+kernel_read_kernel_sysctls(db2d_t)
+kernel_sendrecv_unlabeled_packets(db2d_t)
+kernel_sendrecv_unlabeled_association( db2d_t )
+kernel_rw_kernel_sysctl( db2d_t )
+kernel_search_network_sysctl( db2d_t )
+kernel_read_net_sysctls( db2d_t )
+kernel_search_vm_sysctl( db2d_t )
+kernel_read_vm_sysctls( db2d_t )
+kernel_read_fs_sysctls( db2d_t )
+
+
+term_use_generic_ptys(db2d_t)
+userdom_setattr_user_ptys( db2d_t )
+userdom_create_user_pty( db2d_t )
+userdom_use_user_ptys( db2d_t )
+
+rpm_read_db( db2d_t )
+
+# Allow communications with processes running in the unconfined domain
+unconfined_signull(db2d_t)  # can send signull to the unconfined domain
+unconfined_rw_pipes(db2d_t)
+
+
+
+inetd_use_fds( db2d_t )
+inetd_rw_tcp_sockets( db2d_t )
+
+init_use_fds( db2d_t )
+
+nslcd_stream_connect( db2d_t )
+
+
+# Required by the PVP validation test suite
+allow db2d_t xdm_t:shm create_shm_perms;
+
+#allow db2d_t proc_security_t:file { open read getattr };
+allow db2d_t passwd_file_t:file { getattr open read };
+
+
+allow db2d_t unconfined_t:tcp_socket rw_socket_perms;
+allow db2d_t unconfined_t:sem create_sem_perms;
+allow db2d_t unconfined_t:shm create_shm_perms;
+allow db2d_t unconfined_t:msgq create_msgq_perms;
+allow db2d_t unconfined_t:msg all_msg_perms;
+
+# Allow processes in the domain to "use" /dev/pts/1
+allow db2d_t remote_login_t:fd use;
+
+# Allow processes in the domain to read and write to the console
+allow db2d_t rlogind_devpts_t:chr_file rw_file_perms;
+
+
+
+
+
+##############################################################
+#
+# Unique permissions for everything else
+#
+##############################################################
+
+files_lock_file(db2_file_t)
+
+# If a process running in domain db2d_t, db2adminusers_types or db2appusers_types
+# Creates a directory named sqldbdir
+# In a directory with label db2_data_t
+# It will get the label db2_file_t
+# This is to cover case of ~/db2inst1/db2inst1/NODE0000/sqldbdir
+filetrans_pattern( db2d_t,              db2_data_t, db2_file_t, dir, "sqldbdir" )
+filetrans_pattern( db2_adminusers_types, db2_data_t, db2_file_t, dir, "sqldbdir" )
+
+##############################################################
+#
+# Unique permissions for db2_admin_types
+# That is, what are types like unconfined_t, dbadm_t etc.
+# allowed to do.
+# db2_admin_types includes everything in db2_user_types
+#
+##############################################################
+
+db2_user_manage_db2_files( db2_adminusers_types )
+db2_admin_manage_db2_files( db2_adminusers_types )
+
